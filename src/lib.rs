@@ -189,7 +189,7 @@ impl Protocol {
         Self::with_stream(stream)
     }
 
-    pub fn send_message(&mut self, message: &mut impl Serialize) -> io::Result<()> {
+    pub fn send_message(&mut self, message: &impl Serialize) -> io::Result<()> {
         message.serialize(&mut self.stream)?;
         self.stream.flush()
     }
