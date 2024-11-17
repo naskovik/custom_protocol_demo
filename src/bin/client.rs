@@ -4,14 +4,12 @@ use custom_protocol_demo::{Protocol, Request, Response};
 use uuid::Uuid;
 
 pub struct Args {
-    id: Uuid,
     room: Option<Uuid>,
     message: Option<String>,
 }
 
 fn main() -> std::io::Result<()> {
     let args: Args = Args {
-        id: Uuid::new_v4(),
         room: None, // hard-coded for now
         message: Some("Hello World".to_string()),
     };
