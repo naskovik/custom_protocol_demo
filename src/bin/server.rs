@@ -15,27 +15,48 @@ fn handle_connection(stream: TcpStream, clients: &mut HashSet<SocketAddr>) -> st
     let is_new = (*clients).insert(peer_addr);
     let mut protocol = Protocol::with_stream(stream)?;
 
-    let request = protocol.read_message::<Request>()?;
-    let res = match request {
-        Request::Message { .. } => {
-            eprintln!("Incoming message from [{}]", peer_addr);
-            if is_new {
-                Response::Error
-            } else {
-                Response::MsgSent(Uuid::new_v4().as_u128())
-            }
+    let initial_request = protocol.read_message::<Request>()?;
+    match initial_request {
+        Request::Connect => {
+            let res = Response::Ack;
+            protocol.send_message(&res)?;
         }
-        Request::Join(room_id) => {
-            eprintln!("[{}] trying to join", peer_addr);
-            if is_new {
-                Response::Joined(room_id)
-            } else {
-                Response::JoinReject
-            }
+        _ => {
+            let res = Response::Error;
+            protocol.send_message(&res)?;
         }
     };
 
-    protocol.send_message(&res)
+    loop {
+        let request = protocol.read_message::<Request>()?;
+        match request {
+            Request::Disconnect => {
+                protocol.send_message(&Response::Ack)?;
+                clients.remove(&peer_addr);
+                break;
+            }
+            Request::Join(room_id) => {
+                let res = if is_new {
+                    Response::Joined(room_id)
+                } else {
+                    Response::JoinReject
+                };
+
+                protocol.send_message(&res)?;
+            }
+            Request::Message { message, .. } => {
+                println!("Message received: {}", message);
+                //let res = Response::MsgSent;
+                //protocol.send_message(&res)?;
+            }
+            _ => {
+                let res = Response::Error;
+                protocol.send_message(&res)?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn main() -> std::io::Result<()> {
@@ -55,7 +76,9 @@ fn main() -> std::io::Result<()> {
             let clients = Arc::clone(&_clients);
             std::thread::spawn(move || {
                 let mut clients = clients.lock().unwrap();
-                handle_connection(stream, &mut clients).map_err(|err| eprintln!("Error {}", err))
+                handle_connection(stream, &mut clients)
+                    .map_err(|err| eprintln!("Error {}", err))
+                    .unwrap(); // TODO actually handle error
             });
         }
     }
