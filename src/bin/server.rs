@@ -6,19 +6,15 @@ use std::{
 };
 use uuid::Uuid;
 
-struct Args {
-    addr: SocketAddr,
-}
-
-fn handle_connection(stream: TcpStream, clients: &mut HashSet<SocketAddr>) -> std::io::Result<()> {
-    let peer_addr = stream.peer_addr().expect("Stream has peer_addr");
-    let is_new = (*clients).insert(peer_addr);
+fn handle_connection(stream: TcpStream, clients: &mut HashSet<Uuid>) -> std::io::Result<()> {
     let mut protocol = Protocol::with_stream(stream)?;
+    let client_id = Uuid::new_v4();
 
     let initial_request = protocol.read_message::<Request>()?;
     match initial_request {
         Request::Connect => {
-            let res = Response::Ack;
+            let _ = (*clients).insert(client_id);
+            let res = Response::Connected(client_id.as_u128());
             protocol.send_message(&res)?;
         }
         _ => {
@@ -32,22 +28,11 @@ fn handle_connection(stream: TcpStream, clients: &mut HashSet<SocketAddr>) -> st
         match request {
             Request::Disconnect => {
                 protocol.send_message(&Response::Ack)?;
-                clients.remove(&peer_addr);
+                clients.remove(&client_id);
                 break;
             }
-            Request::Join(room_id) => {
-                let res = if is_new {
-                    Response::Joined(room_id)
-                } else {
-                    Response::JoinReject
-                };
-
-                protocol.send_message(&res)?;
-            }
-            Request::Message { message, .. } => {
+            Request::Message(message) => {
                 println!("Message received: {}", message);
-                //let res = Response::MsgSent;
-                //protocol.send_message(&res)?;
             }
             _ => {
                 let res = Response::Error;
@@ -60,17 +45,15 @@ fn handle_connection(stream: TcpStream, clients: &mut HashSet<SocketAddr>) -> st
 }
 
 fn main() -> std::io::Result<()> {
-    let args = Args {
-        addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 42069),
-    };
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 42069);
 
     let server_uuid = Uuid::new_v4();
     println!("Server id: {}", server_uuid);
 
-    let mut _clients: Arc<Mutex<HashSet<SocketAddr>>> = Arc::new(Mutex::new(HashSet::new()));
+    let mut _clients: Arc<Mutex<HashSet<Uuid>>> = Arc::new(Mutex::new(HashSet::new()));
 
-    eprintln!("Starting server on {}", args.addr);
-    let listener = TcpListener::bind(args.addr)?;
+    eprintln!("Starting server on {}", addr);
+    let listener = TcpListener::bind(addr)?;
     for stream in listener.incoming() {
         if let Ok(stream) = stream {
             let clients = Arc::clone(&_clients);

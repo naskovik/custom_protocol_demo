@@ -1,10 +1,7 @@
 #![allow(dead_code)]
+/// Custom protocol for chat server
+///
 use byteorder::*;
-/// Pretending that I'm making some sort of chat application.
-/// This would be a custom protocol for that.
-/// Probably not useful in a real scenario.
-///
-///
 use std::{
     io::{self, Read, Write},
     net::{SocketAddr, TcpStream},
@@ -21,23 +18,14 @@ pub trait Deserialize {
 
 pub enum Request {
     Connect,
-    Join(u128),
-    Message { room_id: u128, message: String },
+    Message(String),
     Disconnect,
 }
 
 impl Request {
     pub fn get_message(&self) -> Option<&String> {
         match self {
-            Request::Message { message, .. } => Some(message),
-            _ => None,
-        }
-    }
-
-    pub fn get_room(&self) -> Option<u128> {
-        match self {
-            Request::Message { room_id, .. } => Some(*room_id),
-            Request::Join(room_id) => Some(*room_id),
+            Request::Message(message) => Some(message),
             _ => None,
         }
     }
@@ -46,9 +34,8 @@ impl Request {
 impl From<&Request> for u8 {
     fn from(value: &Request) -> Self {
         match value {
-            Request::Join(_) => 0,
-            Request::Message { .. } => 1,
-            Request::Connect => 3,
+            Request::Message(_) => 0,
+            Request::Connect => 1,
             Request::Disconnect => 2,
         }
     }
@@ -58,13 +45,7 @@ impl Serialize for Request {
     fn serialize(&self, buf: &mut impl Write) -> io::Result<()> {
         buf.write_u8(self.into())?;
         match self {
-            Request::Join(room_id) => {
-                buf.write_u8(128)?;
-                buf.write_u128::<NetworkEndian>(*room_id)?;
-            }
-            Request::Message { room_id, message } => {
-                buf.write_u8(128)?;
-                buf.write_u128::<NetworkEndian>(*room_id)?;
+            Request::Message(message) => {
                 let message = message.as_bytes();
                 buf.write_u16::<NetworkEndian>(message.len() as u16)?;
                 buf.write_all(message)?;
@@ -81,18 +62,10 @@ impl Deserialize for Request {
         let req_type = buf.read_u8()?;
         match req_type {
             0 => {
-                buf.read_u8()?;
-                let room_id = buf.read_u128::<NetworkEndian>()?;
-                Ok(Request::Join(room_id))
-            }
-            1 => {
-                buf.read_u8()?;
-                let room_id = buf.read_u128::<NetworkEndian>()?;
                 let message = extract_string(&mut buf)?;
-
-                Ok(Request::Message { room_id, message })
+                Ok(Request::Message(message))
             }
-            3 => Ok(Request::Connect),
+            1 => Ok(Request::Connect),
             2 => Ok(Request::Disconnect),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -103,8 +76,7 @@ impl Deserialize for Request {
 }
 
 pub enum Response {
-    Joined(u128),
-    JoinReject,
+    Connected(u128),
     Error,
     Ack,
 }
@@ -112,7 +84,7 @@ pub enum Response {
 impl Response {
     pub fn get_inner(&self) -> Option<u128> {
         match self {
-            Response::Joined(room_id) => Some(*room_id),
+            Response::Connected(client_id) => Some(*client_id),
             _ => None,
         }
     }
@@ -122,9 +94,8 @@ impl From<&Response> for u8 {
     fn from(value: &Response) -> Self {
         match value {
             Response::Error => 0,
-            Response::JoinReject => 1,
-            Response::Joined(_) => 2,
-            Response::Ack => 4,
+            Response::Ack => 1,
+            Response::Connected(_) => 2,
         }
     }
 }
@@ -133,7 +104,7 @@ impl Serialize for Response {
     fn serialize(&self, buf: &mut impl Write) -> io::Result<()> {
         buf.write_u8(self.into())?;
         match self {
-            Response::Joined(inner) => {
+            Response::Connected(inner) => {
                 buf.write_u16::<NetworkEndian>(128)?;
                 buf.write_all(&inner.to_be_bytes())?;
             }
@@ -150,13 +121,12 @@ impl Deserialize for Response {
         let response_type = buf.read_u8()?;
         match response_type {
             0 => Ok(Response::Error),
-            1 => Ok(Response::JoinReject),
+            1 => Ok(Response::Ack),
             2 => {
-                let _room_id_len = buf.read_u16::<NetworkEndian>()?; // 128
-                let room_id = buf.read_u128::<NetworkEndian>()?;
-                Ok(Response::Joined(room_id))
+                let _client_id_len = buf.read_u16::<NetworkEndian>()?; // 128
+                let client_id = buf.read_u128::<NetworkEndian>()?;
+                Ok(Response::Connected(client_id))
             }
-            4 => Ok(Response::Ack),
             _ => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "Unsupported response type byte found at Response::deserialize",
@@ -206,23 +176,19 @@ mod test {
 
     #[test]
     fn test_request_join() {
-        let req = Request::Join(10 as u128);
+        let req = Request::Connect;
         let mut bytes: Vec<u8> = vec![];
         req.serialize(&mut bytes).unwrap();
 
         let mut reader = Cursor::new(bytes);
         let join_req = Request::deserialize(&mut reader).unwrap();
 
-        assert!(matches!(join_req, Request::Join(_)));
-        assert_eq!(10, join_req.get_room().unwrap());
+        assert!(matches!(join_req, Request::Connect));
     }
 
     #[test]
     fn test_request_message() {
-        let req = Request::Message {
-            room_id: 10 as u128,
-            message: "Hola Mundo".to_string(),
-        };
+        let req = Request::Message("Hola Mundo".into());
         let mut bytes: Vec<u8> = vec![];
         req.serialize(&mut bytes).unwrap();
 
@@ -230,13 +196,12 @@ mod test {
         let message_req = Request::deserialize(&mut reader).unwrap();
 
         assert!(matches!(message_req, Request::Message { .. }));
-        assert_eq!(10 as u128, message_req.get_room().unwrap());
         assert_eq!("Hola Mundo", message_req.get_message().unwrap());
     }
 
     #[test]
-    fn test_response_joined() {
-        let res = Response::Joined(10);
+    fn test_response_connected() {
+        let res = Response::Connected(10);
         let mut bytes: Vec<u8> = vec![];
 
         res.serialize(&mut bytes).unwrap();
@@ -244,28 +209,20 @@ mod test {
         let mut reader = Cursor::new(bytes);
         let joined_res = Response::deserialize(&mut reader).unwrap();
 
-        assert!(matches!(joined_res, Response::Joined(_)));
+        assert!(matches!(joined_res, Response::Connected(_)));
         assert_eq!(joined_res.get_inner().unwrap(), 10);
     }
 
     #[test]
-    fn test_response_rest() {
+    fn test_response_error() {
         let res_err = Response::Error;
-        let res_jr = Response::JoinReject;
-
         let mut buff_err: Vec<u8> = vec![];
-        let mut buff_jr: Vec<u8> = vec![];
 
         res_err.serialize(&mut buff_err).unwrap();
-        res_jr.serialize(&mut buff_jr).unwrap();
 
         let mut reader_err = Cursor::new(buff_err);
-        let mut reader_jr = Cursor::new(buff_jr);
-
         let err_res = Response::deserialize(&mut reader_err).unwrap();
-        let jr_res = Response::deserialize(&mut reader_jr).unwrap();
 
         assert!(matches!(err_res, Response::Error));
-        assert!(matches!(jr_res, Response::JoinReject));
     }
 }
